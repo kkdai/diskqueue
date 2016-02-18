@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"math/rand"
 	"os"
 	"path"
@@ -12,6 +13,7 @@ import (
 	"sync/atomic"
 )
 
+//Diskqueue A Disk queue structure
 type Diskqueue struct {
 	//Inherite from sync RWMutex
 	sync.RWMutex
@@ -44,7 +46,7 @@ type Diskqueue struct {
 	exitSyncChan chan int
 }
 
-//Interface of Diskqueue
+// WorkQueue :Interface of Diskqueue
 type WorkQueue interface {
 	Put([]byte) error
 	ReadChan() chan []byte
@@ -54,7 +56,7 @@ type WorkQueue interface {
 	Empty() error
 }
 
-// new a instance of diskqueue to retrive data
+// NewDiskqueue :A new a instance of diskqueue to retrive data
 func NewDiskqueue(name string, path string) WorkQueue {
 	dq := Diskqueue{
 		name:     name,
@@ -63,22 +65,23 @@ func NewDiskqueue(name string, path string) WorkQueue {
 	return &dq
 }
 
-// Cleanup queue and files
+// Empty :Cleanup queue and files
 func (d *Diskqueue) Empty() error {
-	return nil
+	d.emptyChan <- 1
+	return <-d.emptyResponseChan
 }
 
-// Return the depth from this queue (return total length this queue, include all data in files)
+// Depth :Return the depth from this queue (return total length this queue, include all data in files)
 func (d *Diskqueue) Depth() int64 {
 	return atomic.LoadInt64(&d.depth)
 }
 
-// Close this diskQueue
+// Close :this diskQueue
 func (d *Diskqueue) Close() error {
 	return nil
 }
 
-// Put data to diskqueue
+// Put :data to diskqueue
 func (d *Diskqueue) Put(data []byte) error {
 	d.RLock()
 	defer d.RUnlock()
@@ -87,7 +90,7 @@ func (d *Diskqueue) Put(data []byte) error {
 	return <-d.writeResponseChan
 }
 
-// Read data from disk queue
+// ReadChan : Read data from disk queue
 // this is expected to be an *unbuffered* channel
 func (d *Diskqueue) ReadChan() chan []byte {
 	return d.readChan
@@ -153,6 +156,43 @@ func (d *Diskqueue) readMetaDataFile() error {
 	return nil
 }
 
+// readDataFromFile perform low level way to retrieval data from file
+func (d *Diskqueue) readDataFromFile() ([]byte, error) {
+	var err error
+	var dataLength int32
+
+	if d.readFile == nil {
+		//never open file before
+		d.readFile, err = os.OpenFile(d.fileName(d.readFileNum), os.O_RDONLY, 0600)
+		if err != nil {
+			return nil, err
+		}
+
+		d.reader = bufio.NewReader(d.readFile)
+	}
+
+	//TODO handle seek and size control
+
+	err = binary.Read(d.reader, binary.BigEndian, &dataLength)
+	if err != nil {
+		d.readFile.Close()
+		d.readFile = nil
+		return nil, err
+	}
+
+	readBuf := make([]byte, dataLength)
+	_, err = io.ReadFull(d.reader, readBuf)
+	if err != nil {
+		d.readFile.Close()
+		d.readFile = nil
+		return nil, err
+	}
+
+	//TODO. check message size
+	return readBuf, nil
+}
+
+// writeDataToFile perform low level data write to file using buffer
 func (d *Diskqueue) writeDataToFile(data []byte) error {
 	var err error
 
@@ -187,25 +227,48 @@ func (d *Diskqueue) writeDataToFile(data []byte) error {
 	return nil
 }
 
+func (d *Diskqueue) moveReaderForward() {
+	d.readFileNum++
+}
+
+func (d *Diskqueue) removeAllFiles() error {
+	return nil
+}
+
 // Major working thread to handle concurrency
 func (d *Diskqueue) inLoop() {
-
+	var err error
 	var dataRead []byte //data for readChan
 	var count int64     //To store total data write
 
+	var readDataChan chan []byte
 	for {
 
 		//TODO process data
-		readC := d.readChan
+
+		//When first data put the read can work normally, otherwise keep loop
+		if d.readFileNum < d.writeFileNum {
+			dataRead, err = d.readDataFromFile()
+			if err != nil {
+				//TODO handle read error
+				continue
+			}
+			readDataChan = d.readChan
+		} else {
+			readDataChan = nil
+		}
 
 		select {
-		case readC <- dataRead:
-			// Handle read case
-			// the Go channel spec dictates that nil channel operations (read or write)
-			// in a select are skipped, we set r to d.readChan only when there is data to read
 
 		case <-d.emptyChan:
 			// Handle empty command thread
+			d.emptyResponseChan <- d.removeAllFiles()
+
+		case readDataChan <- dataRead:
+			// Handle read case
+			// the Go channel spec dictates that nil channel operations (read or write)
+			// in a select are skipped, we set r to d.readChan only when there is data to read
+			d.moveReaderForward()
 
 		case dataWrite := <-d.writeChan:
 			// Handle write case
