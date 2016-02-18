@@ -11,6 +11,29 @@ Explanation for how it work
 =============
 
 
+
+
+Disclaimer
+=============
+
+This is a going project, during I learn the program about [NSQ](https://github.com/nsqio/nsq). Until all ToDo item done, please use this under your own risk. 
+
+If you really need disk queue, please use [NSQ: Diskqueue source code](https://github.com/nsqio/nsq/blob/master/nsqd/diskqueue.go) in your production consideration.
+
+
+Currently Features
+=============
+- Basic Queue handle
+- One messsage into single file
+
+ToDo Features
+=============
+- Seek handle 
+	- One file store not only one message
+	- Seek write/read handle 
+- Gracefully handle for file R/W
+	- Message size validation (min/max message size)
+
 Installation and Usage
 =============
 
