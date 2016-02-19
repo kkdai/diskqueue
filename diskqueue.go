@@ -275,7 +275,9 @@ func (d *Diskqueue) writeDataToFile(data []byte) error {
 }
 
 func (d *Diskqueue) moveReaderForward() {
+	os.Remove(d.fileName(d.readFileNum))
 	d.readFileNum++
+	d.writeMetaDataFile()
 }
 
 func (d *Diskqueue) removeAllFiles() error {
@@ -325,6 +327,8 @@ func (d *Diskqueue) inLoop() {
 				//TODO handle read error
 				log.Panic("Read err:", err)
 				continue
+			} else {
+				log.Println("Got read data:", dataRead)
 			}
 			readDataChan = d.readChan
 		} else {
@@ -342,6 +346,7 @@ func (d *Diskqueue) inLoop() {
 			// the Go channel spec dictates that nil channel operations (read or write)
 			// in a select are skipped, we set r to d.readChan only when there is data to read
 			d.moveReaderForward()
+			log.Println("Read move next..")
 
 		case dataWrite := <-d.writeChan:
 			// Handle write case
