@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"log"
 	"math/rand"
 	"os"
 	"path"
@@ -41,9 +42,8 @@ type Diskqueue struct {
 
 	emptyChan         chan int
 	emptyResponseChan chan error
-
-	exitChan     chan int
-	exitSyncChan chan int
+	exitChan          chan int
+	exitSyncChan      chan int
 }
 
 // WorkQueue :Interface of Diskqueue
@@ -59,14 +59,38 @@ type WorkQueue interface {
 // NewDiskqueue :A new a instance of diskqueue to retrive data
 func NewDiskqueue(name string, path string) WorkQueue {
 	dq := Diskqueue{
-		name:     name,
-		filePath: path,
+		name:              name,
+		filePath:          path,
+		readChan:          make(chan []byte),
+		writeChan:         make(chan []byte),
+		writeResponseChan: make(chan error),
+		emptyChan:         make(chan int),
+		emptyResponseChan: make(chan error),
+		exitChan:          make(chan int),
+		exitSyncChan:      make(chan int),
 	}
+
+	err := dq.readMetaDataFile()
+	if err != nil && !os.IsNotExist(err) {
+		//if error is meta file not exist, log it down
+		log.Println("err on init read meta data file")
+	}
+
+	err = dq.writeMetaDataFile()
+	if err != nil {
+		log.Println("err on init write meta data file")
+	}
+
+	//Start to working loop
+	go dq.inLoop()
 	return &dq
 }
 
 // Empty :Cleanup queue and files
 func (d *Diskqueue) Empty() error {
+	d.RLock()
+	defer d.RUnlock()
+
 	d.emptyChan <- 1
 	return <-d.emptyResponseChan
 }
@@ -78,14 +102,17 @@ func (d *Diskqueue) Depth() int64 {
 
 // Close :this diskQueue
 func (d *Diskqueue) Close() error {
+	d.exitChan <- 1
 	return nil
 }
 
 // Put :data to diskqueue
 func (d *Diskqueue) Put(data []byte) error {
+	log.Println("Enter put data:", string(data))
 	d.RLock()
 	defer d.RUnlock()
 
+	log.Println("put after lock")
 	d.writeChan <- data
 	return <-d.writeResponseChan
 }
@@ -110,6 +137,8 @@ func (d *Diskqueue) writeMetaDataFile() error {
 
 	metaFile := d.metaDataFileName()
 	tmpFile := fmt.Sprintf("%s.%d.tmp", d.filePath, rand.Int())
+
+	log.Println("temp meta file:", tmpFile)
 
 	//Opeb temp meta tata file to write first, avoid any conflict
 	f, err = os.OpenFile(tmpFile, os.O_RDWR|os.O_CREATE, 0600)
@@ -161,10 +190,12 @@ func (d *Diskqueue) readDataFromFile() ([]byte, error) {
 	var err error
 	var dataLength int32
 
+	log.Println("read file:", d.fileName(d.readFileNum))
 	if d.readFile == nil {
 		//never open file before
 		d.readFile, err = os.OpenFile(d.fileName(d.readFileNum), os.O_RDONLY, 0600)
 		if err != nil {
+			log.Println("Open read file err")
 			return nil, err
 		}
 
@@ -175,20 +206,25 @@ func (d *Diskqueue) readDataFromFile() ([]byte, error) {
 
 	err = binary.Read(d.reader, binary.BigEndian, &dataLength)
 	if err != nil {
+		log.Println("Read read file binary err")
 		d.readFile.Close()
 		d.readFile = nil
 		return nil, err
 	}
-
+	log.Println("Read find data size:", dataLength)
 	readBuf := make([]byte, dataLength)
 	_, err = io.ReadFull(d.reader, readBuf)
 	if err != nil {
+		log.Println("Read read to buffer error")
 		d.readFile.Close()
 		d.readFile = nil
 		return nil, err
 	}
 
 	//TODO. check message size
+
+	d.readFile.Close()
+	d.readFile = nil
 	return readBuf, nil
 }
 
@@ -200,20 +236,29 @@ func (d *Diskqueue) writeDataToFile(data []byte) error {
 		//never open file before
 		d.writeFile, err = os.OpenFile(d.fileName(d.writeFileNum), os.O_RDWR|os.O_CREATE, 0600)
 		if err != nil {
+			log.Println("write data file err:", err)
 			return err
 		}
 
 	}
 
-	dataLength := int32(len(data))
+	log.Println("Write data:", string(data), " to file:", d.fileName(d.writeFileNum))
 
+	dataLength := int32(len(data))
 	//TODO. check message size
 
+	d.writeBuf.Reset()
 	err = binary.Write(&d.writeBuf, binary.BigEndian, dataLength)
 	if err != nil {
 		return err
 	}
 
+	_, err = d.writeBuf.Write(data)
+	if err != nil {
+		return err
+	}
+
+	log.Println("Write buf:", d.writeBuf, " data:", string(d.writeBuf.Bytes()), " ori:", string(data))
 	_, err = d.writeFile.Write(d.writeBuf.Bytes())
 	if err != nil {
 		d.writeFile.Close()
@@ -221,8 +266,10 @@ func (d *Diskqueue) writeDataToFile(data []byte) error {
 		return err
 	}
 
+	log.Println("Write data to buffer done")
 	//TODO handle seek and size control
-
+	d.writeFile.Close()
+	d.writeFile = nil
 	d.writeFileNum++
 	return nil
 }
@@ -232,7 +279,21 @@ func (d *Diskqueue) moveReaderForward() {
 }
 
 func (d *Diskqueue) removeAllFiles() error {
-	return nil
+	os.RemoveAll(d.metaDataFileName())
+	return os.RemoveAll(d.filePath)
+}
+
+func (d *Diskqueue) sync() error {
+	if d.writeFile != nil {
+		err := d.writeFile.Sync()
+		if err != nil {
+			d.writeFile.Close()
+			d.writeFile = nil
+			return err
+		}
+	}
+
+	return d.writeMetaDataFile()
 }
 
 // Major working thread to handle concurrency
@@ -244,13 +305,25 @@ func (d *Diskqueue) inLoop() {
 	var readDataChan chan []byte
 	for {
 
-		//TODO process data
+		var fileSync bool
+		if count > 5 {
+			count = 0
+			fileSync = true
+		}
+
+		if fileSync {
+			err = d.sync()
+			if err != nil {
+				log.Println("File sync error:", err)
+			}
+		}
 
 		//When first data put the read can work normally, otherwise keep loop
 		if d.readFileNum < d.writeFileNum {
 			dataRead, err = d.readDataFromFile()
 			if err != nil {
 				//TODO handle read error
+				log.Panic("Read err:", err)
 				continue
 			}
 			readDataChan = d.readChan
