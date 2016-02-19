@@ -1,4 +1,4 @@
-Diskqueue: DiskQueue which 
+Diskqueue: Disk storage Message Queue package refer from NSQ
 ==============
 
 [![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg)](https://raw.githubusercontent.com/kkdai/diskqueue/master/LICENSE)  [![GoDoc](https://godoc.org/github.com/kkdai/diskqueue?status.svg)](https://godoc.org/github.com/kkdai/diskqueue)  [![Build Status](https://travis-ci.org/kkdai/diskqueue.svg?branch=master)](https://travis-ci.org/kkdai/diskqueue)
