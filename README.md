@@ -1,4 +1,4 @@
-Diskqueue: 
+Diskqueue: DiskQueue which 
 ==============
 
 [![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg)](https://raw.githubusercontent.com/kkdai/diskqueue/master/LICENSE)  [![GoDoc](https://godoc.org/github.com/kkdai/diskqueue?status.svg)](https://godoc.org/github.com/kkdai/diskqueue)  [![Build Status](https://travis-ci.org/kkdai/diskqueue.svg?branch=master)](https://travis-ci.org/kkdai/diskqueue)
@@ -7,8 +7,7 @@ Diskqueue:
 What is this "Disk Queue"
 =============
 
-Explanation for how it work
-=============
+Diskqueue is a submodule of [NSQ](https://github.com/nsqio/nsq) which to use Disk to store message queue.
 
 
 
@@ -60,6 +59,20 @@ import (
 )
 
 func main() {
+
+	//Create a disk queue, please note the path must exist
+	dq := NewDiskqueue("workqueue", "./test")
+
+	//First put data
+	err = dq.Put([]byte("00"))
+	//Second data put
+	err = dq.Put([]byte("111"))
+
+	//Read data from queue, it is unbuffered channel
+	data := <-dq.ReadChan()
+	
+	//Close this queue
+	dq.Close()
 }
 ```
 

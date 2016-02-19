@@ -13,6 +13,19 @@ import (
 )
 
 func TestEmptyQueue(t *testing.T) {
+	dqName := "test_disk_queue" + strconv.Itoa(int(time.Now().Unix()))
+	tmpDir, err := ioutil.TempDir("", fmt.Sprintf("nsq-test-%d", time.Now().UnixNano()))
+	if err != nil {
+		panic(err)
+	}
+
+	defer os.RemoveAll(tmpDir)
+	dq := NewDiskqueue(dqName, tmpDir)
+
+	if dq == nil {
+		t.Error("empty test error")
+	}
+	dq.Close()
 }
 
 func TestBasicQueue(t *testing.T) {
